@@ -1,4 +1,4 @@
-import { getStatus } from "./api.js?v=20260623d";
+import { getStatus } from "./api.js?v=20260623e";
 
 let _uptimeBase = null; // { uptime_s, since_ts, autoUpdate }
 
@@ -42,24 +42,34 @@ function tickUptime() {
   if (_uptimeBase.status_ts) renderUpdatedAt(_uptimeBase.status_ts);
 }
 
+function _colorToCls(color) {
+  if (color === "green" || color === "gray") return "green";
+  if (color === "orange")                    return "yellow";
+  if (color === "red" || color === "darkred") return "red";
+  return "empty";
+}
+
 function makeUptimeBar(info, offline) {
   const SEGS = 30;
-  // 과거 가용률은 offline 여부와 무관하게 실제 값 사용
-  const avail = typeof info.availability === "number" ? info.availability / 100 : (info.running ? 1 : 0);
-  const greenCount = Math.round(avail * SEGS);
+  // history: oldest→newest 순, 최대 SEGS-1개 (마지막 칸은 현재 상태)
+  const history = Array.isArray(info.history) ? info.history : [];
 
   const bar = document.createElement("div");
   bar.className = "uptime-bar";
+
   for (let i = 0; i < SEGS; i++) {
     const seg = document.createElement("div");
-    const isLast = i === SEGS - 1;
     let cls;
-    if (isLast) {
-      // 마지막 칸만 현재 상태 반영: 오프라인=회색, 다운=빨간, 정상=초록
-      cls = offline ? "empty" : (info.running ? "green" : "red");
+
+    if (i === SEGS - 1) {
+      // 오른쪽 끝 = 현재 상태
+      cls = offline ? "empty" : (info.running ? _colorToCls(info.color || "green") : "red");
     } else {
-      cls = i < greenCount ? "green" : "red";
+      // 과거 슬롯: history를 오른쪽 정렬 (왼쪽 빈 칸 = 데이터 없음)
+      const hi = history.length - (SEGS - 1) + i;
+      cls = hi < 0 ? "empty" : _colorToCls(history[hi]);
     }
+
     seg.className = "bar-seg " + cls;
     bar.appendChild(seg);
   }
@@ -101,10 +111,13 @@ function renderServiceList(services, offline) {
     // 업타임 바
     row.appendChild(makeUptimeBar(info, offline));
 
-    // 가용률
+    // 가용률 (history 기반, 없으면 현재 상태로 추정)
     const pct = document.createElement("span");
     pct.className = "svc-pct";
-    const avail = typeof info.availability === "number" ? info.availability : (info.running ? 100 : 0);
+    const hist = Array.isArray(info.history) ? info.history : [];
+    const avail = hist.length > 0
+      ? (hist.filter(h => h === "green" || h === "gray").length / hist.length * 100)
+      : (info.running ? 100 : 0);
     pct.style.color = offline ? "var(--muted)"
       : avail >= 95 ? "var(--green)"
       : avail >= 80 ? "var(--yellow)"
