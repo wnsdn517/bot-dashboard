@@ -45,13 +45,13 @@ function _inferRepoFromUrl() {
   return repo ? { owner, repo } : null;
 }
 
-// meta.json에서 gist_id를 한 번만 조회 후 캐싱
+// meta.json에서 gist_id를 조회 후 캐싱 (실패하면 재시도 허용)
+const _FALLBACK_GIST_ID = "dc6ae3a8ab59432353bd21e1f4d4b4f4";
 let _gistId       = null;
 let _gistIdFetched = false;
 
 async function _resolveGistId(owner, repo, branch, ghToken) {
-  if (_gistIdFetched) return _gistId;
-  _gistIdFetched = true;
+  if (_gistIdFetched && _gistId) return _gistId;  // 성공한 캐시만 재사용
   try {
     const headers = { "Accept": "application/vnd.github+json" };
     if (ghToken) headers["Authorization"] = `Bearer ${ghToken}`;
@@ -62,10 +62,11 @@ async function _resolveGistId(owner, repo, branch, ghToken) {
     if (res.ok) {
       const data = await res.json();
       const meta = JSON.parse(atob(data.content.replace(/\n/g, "")));
-      _gistId = meta.status_gist_id || null;
+      _gistId = meta.status_gist_id || _FALLBACK_GIST_ID;
+      _gistIdFetched = true;
     }
   } catch (_) {}
-  return _gistId;
+  return _gistId || _FALLBACK_GIST_ID;  // fetch 실패시 하드코딩 폴백
 }
 
 export async function getStatus() {
@@ -77,19 +78,19 @@ export async function getStatus() {
   const headers = { "Accept": "application/vnd.github+json" };
   if (s.ghToken) headers["Authorization"] = `Bearer ${s.ghToken}`;
 
-  // 1순위: Gist API — gh-pages 커밋 없이 15초마다 업데이트, 항상 최신
-  if (owner && repo) {
-    const gistId = await _resolveGistId(owner, repo, ref, s.ghToken);
-    if (gistId) {
-      try {
-        const res = await fetch(`https://api.github.com/gists/${gistId}`, { headers });
-        if (res.ok) {
-          const data = await res.json();
-          const content = data.files?.["status.json"]?.content;
-          if (content) return JSON.parse(content);
-        }
-      } catch (_) {}
-    }
+  // 1순위: Gist API (owner/repo 있으면 meta.json 경유, 없으면 하드코딩 폴백 직접 사용)
+  const gistId = owner && repo
+    ? await _resolveGistId(owner, repo, ref, s.ghToken)
+    : _FALLBACK_GIST_ID;
+  if (gistId) {
+    try {
+      const res = await fetch(`https://api.github.com/gists/${gistId}`, { headers });
+      if (res.ok) {
+        const data = await res.json();
+        const content = data.files?.["status.json"]?.content;
+        if (content) return JSON.parse(content);
+      }
+    } catch (_) {}
   }
 
   // 폴백: GitHub Contents API (gh-pages)
