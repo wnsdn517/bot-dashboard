@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>관리자 — Bot Dashboard</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<nav class="nav">
+  <span class="nav-brand">🤖 Bot Dashboard</span>
+  <a href="index.html" class="nav-link">상태</a>
+  <a href="admin.html" class="nav-link active">관리</a>
+</nav>
+
+<div class="container">
+  <div id="toast" class="alert" style="display:none"></div>
+
+  <!-- 설정 (처음 한 번만) -->
+  <div class="card mb-16" id="settings-card">
+    <div class="card-title">GitHub 연결 설정</div>
+    <div class="grid-2">
+      <div class="form-group">
+        <label>GitHub 토큰 (repo scope)</label>
+        <input id="cfg-token"  type="password" placeholder="ghp_..." />
+      </div>
+      <div class="form-group">
+        <label>RCS 시크릿 (config.json의 github.rcs_secret)</label>
+        <input id="cfg-secret" type="password" placeholder="랜덤 문자열" />
+      </div>
+      <div class="form-group">
+        <label>GitHub Owner</label>
+        <input id="cfg-owner"  type="text" placeholder="wnsdn517" />
+      </div>
+      <div class="form-group">
+        <label>Repo 이름</label>
+        <input id="cfg-repo"   type="text" placeholder="Project_bot" />
+      </div>
+    </div>
+    <button id="btn-save-cfg" class="btn btn-primary">저장</button>
+    <p class="text-muted mt-8" style="font-size:11px">
+      ⚠ 토큰은 이 브라우저의 localStorage에만 저장됩니다. 네트워크로 전송되지 않습니다.
+    </p>
+  </div>
+
+  <!-- 봇 제어 -->
+  <div class="card mb-16">
+    <div class="card-title">원격 제어 (RCS)</div>
+    <div class="flex" style="flex-wrap:wrap;gap:10px">
+      <button id="btn-restart" class="btn btn-danger">봇 재시작</button>
+      <button id="btn-au-on"   class="btn">자동 업데이트 ON</button>
+      <button id="btn-au-off"  class="btn">자동 업데이트 OFF</button>
+    </div>
+    <p class="text-muted mt-8" style="font-size:11px">
+      명령은 HMAC-SHA256으로 서명 후 GitHub에 업로드 → 봇이 30초 내 확인·실행·결과 기록
+    </p>
+  </div>
+
+  <!-- 공지 -->
+  <div class="card mb-16">
+    <div class="card-title">전체 공지</div>
+    <div class="form-group">
+      <label>메시지</label>
+      <textarea id="announce-msg" rows="3" placeholder="공지 내용..."></textarea>
+    </div>
+    <button id="btn-announce" class="btn btn-primary">전송</button>
+  </div>
+
+  <div class="grid-2">
+    <!-- 방 관리 -->
+    <div class="card">
+      <div class="card-title">방 관리</div>
+      <div class="flex mb-8">
+        <input id="room-id-input" type="text" placeholder="방 ID (숫자)" style="flex:1" />
+        <button id="btn-room-add"    class="btn btn-primary btn-sm">추가</button>
+        <button id="btn-room-remove" class="btn btn-danger  btn-sm">제거</button>
+      </div>
+    </div>
+
+    <!-- 매니저 관리 -->
+    <div class="card">
+      <div class="card-title">매니저 관리</div>
+      <div class="flex mb-8">
+        <input id="mgr-id-input" type="text" placeholder="User ID (숫자)" style="flex:1" />
+        <button id="btn-mgr-add"    class="btn btn-primary btn-sm">추가</button>
+        <button id="btn-mgr-remove" class="btn btn-danger  btn-sm">제거</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 명령 결과 -->
+  <div class="card mt-16">
+    <div class="card-title">최근 명령 결과</div>
+    <div id="cmd-results" class="text-muted">명령을 전송하면 여기에 결과가 표시됩니다.</div>
+  </div>
+
+</div>
+
+<script type="module">
+  import {
+    getSettings, saveSettings, isConfigured,
+    rcsAnnounce, rcsRestart, rcsSetUpdate,
+    rcsRoomAdd, rcsRoomRemove, rcsManagerAdd, rcsManagerRemove,
+    waitForResult,
+  } from "./js/api.js";
+
+  function toast(msg, type = "info") {
+    const el = document.getElementById("toast");
+    el.textContent = msg;
+    el.className = `alert alert-${type}`;
+    el.style.display = "block";
+    setTimeout(() => { el.style.display = "none"; }, 5000);
+  }
+
+  function addResult(action, result, status = "info") {
+    const el = document.getElementById("cmd-results");
+    const row = document.createElement("div");
+    row.className = `alert alert-${status}`;
+    row.style.marginBottom = "6px";
+    const now = new Date().toLocaleTimeString();
+    row.textContent = `[${now}] ${action}: ${result || "대기 중…"}`;
+    if (el.textContent.includes("표시됩니다")) el.innerHTML = "";
+    el.prepend(row);
+  }
+
+  async function send(label, fn) {
+    if (!isConfigured()) {
+      toast("설정을 먼저 저장하세요.", "error");
+      document.getElementById("settings-card").scrollIntoView({ behavior: "smooth" });
+      return;
+    }
+    toast(`${label} 명령 전송 중…`);
+    try {
+      const cmdId = await fn();
+      addResult(label, "전송 완료, 봇 응답 대기 중 (최대 90초)…", "info");
+      const result = await waitForResult(cmdId);
+      if (result) {
+        addResult(label, result, "success");
+        toast(`${label}: ${result}`, "success");
+      } else {
+        addResult(label, "봇 응답 없음 (타임아웃)", "error");
+        toast("응답 없음 — 봇이 실행 중인지 확인하세요.", "error");
+      }
+    } catch (e) {
+      toast(`오류: ${e.message}`, "error");
+      addResult(label, `오류: ${e.message}`, "error");
+    }
+  }
+
+  // 설정 저장
+  const s = getSettings();
+  document.getElementById("cfg-token").value  = s.ghToken;
+  document.getElementById("cfg-secret").value = s.rcsSecret;
+  document.getElementById("cfg-owner").value  = s.owner;
+  document.getElementById("cfg-repo").value   = s.repo;
+
+  document.getElementById("btn-save-cfg").addEventListener("click", () => {
+    saveSettings({
+      ghToken:   document.getElementById("cfg-token").value.trim(),
+      rcsSecret: document.getElementById("cfg-secret").value.trim(),
+      owner:     document.getElementById("cfg-owner").value.trim(),
+      repo:      document.getElementById("cfg-repo").value.trim(),
+    });
+    toast("설정 저장 완료", "success");
+  });
+
+  document.getElementById("btn-restart").addEventListener("click", () => {
+    if (!confirm("봇을 재시작하시겠습니까?")) return;
+    send("재시작", rcsRestart);
+  });
+  document.getElementById("btn-au-on").addEventListener("click",  () => send("자동업데이트 ON",  () => rcsSetUpdate(true)));
+  document.getElementById("btn-au-off").addEventListener("click", () => send("자동업데이트 OFF", () => rcsSetUpdate(false)));
+
+  document.getElementById("btn-announce").addEventListener("click", () => {
+    const msg = document.getElementById("announce-msg").value.trim();
+    if (!msg) { toast("메시지를 입력하세요.", "error"); return; }
+    send("공지", () => rcsAnnounce(msg));
+  });
+
+  document.getElementById("btn-room-add").addEventListener("click", () => {
+    const rid = parseInt(document.getElementById("room-id-input").value.trim());
+    if (!rid) { toast("방 ID를 입력하세요.", "error"); return; }
+    send(`방 ${rid} 추가`, () => rcsRoomAdd(rid));
+  });
+  document.getElementById("btn-room-remove").addEventListener("click", () => {
+    const rid = parseInt(document.getElementById("room-id-input").value.trim());
+    if (!rid) { toast("방 ID를 입력하세요.", "error"); return; }
+    send(`방 ${rid} 제거`, () => rcsRoomRemove(rid));
+  });
+
+  document.getElementById("btn-mgr-add").addEventListener("click", () => {
+    const uid = parseInt(document.getElementById("mgr-id-input").value.trim());
+    if (!uid) { toast("User ID를 입력하세요.", "error"); return; }
+    send(`매니저 ${uid} 추가`, () => rcsManagerAdd(uid));
+  });
+  document.getElementById("btn-mgr-remove").addEventListener("click", () => {
+    const uid = parseInt(document.getElementById("mgr-id-input").value.trim());
+    if (!uid) { toast("User ID를 입력하세요.", "error"); return; }
+    send(`매니저 ${uid} 제거`, () => rcsManagerRemove(uid));
+  });
+</script>
+</body>
+</html>

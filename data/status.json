@@ -1,0 +1,56 @@
+{
+  "updated_at": "2026-06-23 11:18:17",
+  "updated_ts": 1782181097,
+  "uptime_s": 4618,
+  "services": {
+    "server": {
+      "running": true,
+      "availability": 100.0,
+      "color": "green",
+      "last_ts": "2026-06-23 11:18:15",
+      "history_count": 120,
+      "ok_count": 120,
+      "miss_count": 0
+    },
+    "frida": {
+      "running": true,
+      "availability": 100.0,
+      "color": "green",
+      "last_ts": "2026-06-23 11:18:15",
+      "history_count": 120,
+      "ok_count": 120,
+      "miss_count": 0
+    },
+    "kakao": {
+      "running": true,
+      "availability": 100.0,
+      "color": "green",
+      "last_ts": "2026-06-23 11:18:15",
+      "history_count": 120,
+      "ok_count": 120,
+      "miss_count": 0
+    },
+    "botprocess": {
+      "running": true,
+      "availability": 100.0,
+      "color": "green",
+      "last_ts": "2026-06-23 11:18:15",
+      "history_count": 120,
+      "ok_count": 120,
+      "miss_count": 0
+    },
+    "frida_hook": {
+      "running": true,
+      "availability": 100.0,
+      "color": "green",
+      "last_ts": "2026-06-23 11:18:15",
+      "history_count": 120,
+      "ok_count": 120,
+      "miss_count": 0
+    }
+  },
+  "blocked": false,
+  "managers": 15,
+  "rooms": 19,
+  "auto_update": false
+}
