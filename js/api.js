@@ -237,9 +237,10 @@ export async function recordVisit() {
   const inferred = _inferRepoFromUrl();
   const owner = s.owner || inferred?.owner || "";
   const repo  = s.repo  || inferred?.repo  || "";
-  if (!owner || !repo) return;
 
-  const gistId = await _resolveGistId(owner, repo, s.branch || "gh-pages", s.ghToken);
+  const gistId = owner && repo
+    ? await _resolveGistId(owner, repo, s.branch || "gh-pages", s.ghToken)
+    : _FALLBACK_GIST_ID;
   if (!gistId) return;
 
   const today   = _todayStr();
@@ -277,8 +278,9 @@ export async function getVisits() {
   const inferred = _inferRepoFromUrl();
   const owner = s.owner || inferred?.owner || "";
   const repo  = s.repo  || inferred?.repo  || "";
-  if (!owner || !repo) return null;
-  const gistId = await _resolveGistId(owner, repo, s.branch || "gh-pages", s.ghToken);
+  const gistId = owner && repo
+    ? await _resolveGistId(owner, repo, s.branch || "gh-pages", s.ghToken)
+    : _FALLBACK_GIST_ID;
   if (!gistId) return null;
   const headers = { "Accept": "application/vnd.github+json" };
   if (s.ghToken) headers["Authorization"] = `Bearer ${s.ghToken}`;
