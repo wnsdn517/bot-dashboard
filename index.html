@@ -38,11 +38,11 @@
       <div class="svc-loading"><span class="spinner"></span> 로딩 중...</div>
     </div>
   </div>
-  <p class="page-note">봇이 15초마다 GitHub에 상태를 업로드합니다. 3분 이상 갱신 없으면 오프라인으로 표시됩니다.</p>
+  <p class="page-note">봇이 60초마다 GitHub에 상태를 업로드합니다. 5분 이상 갱신 없으면 오프라인으로 표시됩니다.</p>
 </div>
 
 <script type="module">
-  import { startAutoRefresh, refreshDashboard } from "./js/status.js?v=20260623e";
+  import { startAutoRefresh, refreshDashboard } from "./js/status.js?v=20260623f";
   document.getElementById("btn-refresh").addEventListener("click", refreshDashboard);
   startAutoRefresh();
 </script>
