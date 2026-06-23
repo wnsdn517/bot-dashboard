@@ -162,7 +162,7 @@ import {
   rcsAnnounce, rcsRestart, rcsSetUpdate,
   rcsRoomAdd, rcsRoomRemove, rcsManagerAdd, rcsManagerRemove,
   rcsShell, waitForResult, recordVisit, getVisits,
-} from "./js/api.js?v=20260623g";
+} from "./js/api.js?v=20260623h";
 
 // ── 로그인 ──────────────────────────────────────────────────────────────────
 function checkLogin() {
@@ -236,13 +236,22 @@ async function send(label, fn) {
   }
 }
 
-// ── 접속 그래프 ─────────────────────────────────────────────────────────────
+// ── 접속 그래프 (로그 스케일 X축: 최근=넓게, 과거=촘촘하게) ──────────────────
 async function renderVisitChart() {
   await recordVisit();
   const data = await getVisits();
   const canvas = document.getElementById("visit-chart");
   const ctx    = canvas.getContext("2d");
-  const days   = (data?.days || []).slice(-30);
+  // 날짜순 정렬 후 최근 30일
+  const days = (data?.days || [])
+    .sort((a, b) => a.date < b.date ? -1 : 1)
+    .slice(-30);
+  const N = days.length;
+
+  if (N === 0) {
+    document.getElementById("visit-summary").textContent = "방문 데이터 없음 — 이 페이지에 접속하면 자동 기록됩니다.";
+    return;
+  }
 
   const W = canvas.offsetWidth || 600;
   const H = 160;
@@ -255,13 +264,16 @@ async function renderVisitChart() {
   const chartH = H - PAD_T - PAD_B;
 
   const maxVal = Math.max(1, ...days.map(d => d.total || 0));
-  const barW   = Math.max(4, (chartW / Math.max(days.length, 1)) - 2);
+
+  // 로그 스케일 X좌표: xOf(t) = 'x days ago'의 오른쪽 경계
+  // t=0(오늘) → 오른쪽(PAD_L+chartW),  t=N(가장 오래된 왼쪽 경계) → PAD_L
+  const xOf = t => PAD_L + chartW * (1 - Math.log(t + 1) / Math.log(N + 1));
 
   ctx.clearRect(0, 0, W, H);
 
-  // Y grid lines
+  // Y 격자
   ctx.strokeStyle = "#30363d";
-  ctx.lineWidth   = 1;
+  ctx.lineWidth = 1;
   for (let i = 0; i <= 4; i++) {
     const y = PAD_T + (chartH / 4) * i;
     ctx.beginPath(); ctx.moveTo(PAD_L, y); ctx.lineTo(W - PAD_R, y); ctx.stroke();
@@ -271,34 +283,44 @@ async function renderVisitChart() {
     ctx.fillText(Math.round(maxVal * (1 - i / 4)), PAD_L - 4, y + 4);
   }
 
+  // 막대 그리기: 최근일수록 넓은 바
   days.forEach((d, i) => {
-    const x       = PAD_L + i * (chartW / Math.max(days.length, 1));
+    const t   = N - 1 - i;          // days ago (0=오늘)
+    const xR  = xOf(t);             // 막대 오른쪽 경계
+    const xL  = xOf(t + 1);        // 막대 왼쪽 경계
+    const bw  = Math.max(1, xR - xL - 0.5);
     const totalH  = ((d.total  || 0) / maxVal) * chartH;
     const uniqueH = ((d.unique || 0) / maxVal) * chartH;
 
-    // total bar (blue, behind)
     ctx.fillStyle = "rgba(88,166,255,.5)";
-    ctx.fillRect(x + 1, PAD_T + chartH - totalH, barW, totalH);
-
-    // unique bar (green, in front)
+    ctx.fillRect(xL, PAD_T + chartH - totalH,  bw,      totalH);
     ctx.fillStyle = "rgba(63,185,80,.8)";
-    ctx.fillRect(x + 1, PAD_T + chartH - uniqueH, barW * 0.6, uniqueH);
-
-    // X label (every 5 days)
-    if (i % 5 === 0 || i === days.length - 1) {
-      ctx.fillStyle = "#8b949e";
-      ctx.font = "10px sans-serif";
-      ctx.textAlign = "center";
-      ctx.fillText(d.date.slice(5), x + barW / 2, H - 6);
-    }
+    ctx.fillRect(xL, PAD_T + chartH - uniqueH, bw * 0.6, uniqueH);
   });
 
-  // Summary
-  const todayEntry = days.find(d => d.date === new Date().toISOString().slice(0,10));
+  // X축 레퍼런스 틱 (업계 표준 로그 간격)
+  const TICKS  = [{ t: 30, label: "30일" }, { t: 14, label: "14일" },
+                  { t: 7,  label: "7일"  }, { t: 3,  label: "3일"  },
+                  { t: 1,  label: "어제" }, { t: 0,  label: "오늘" }];
+  ctx.strokeStyle = "#444d56";
+  ctx.lineWidth = 0.5;
+  TICKS.forEach(({ t, label }, idx) => {
+    if (t >= N && t !== 0) return;    // 데이터 범위 밖 틱 생략
+    const x = xOf(t);
+    // 틱 선
+    ctx.beginPath(); ctx.moveTo(x, PAD_T + chartH); ctx.lineTo(x, PAD_T + chartH + 3); ctx.stroke();
+    // 레이블 정렬: 첫번째=left, 마지막(오늘)=right, 나머지=center
+    ctx.fillStyle = "#8b949e";
+    ctx.font = "10px sans-serif";
+    ctx.textAlign = t === 0 ? "right" : (idx === 0 ? "left" : "center");
+    ctx.fillText(label, x, H - 6);
+  });
+
+  const todayEntry = days[N - 1];
   const totalSum   = days.reduce((s, d) => s + (d.total  || 0), 0);
   const uniqueSum  = days.reduce((s, d) => s + (d.unique || 0), 0);
   document.getElementById("visit-summary").textContent =
-    `오늘: 접속 ${todayEntry?.total ?? 0}회 / 고유 ${todayEntry?.unique ?? 0}명 · ` +
+    `오늘: 접속 ${todayEntry?.total ?? 0}회 / 고유 ${todayEntry?.unique ?? 0}명  ·  ` +
     `30일 합계: 접속 ${totalSum}회 / 고유 ${uniqueSum}명`;
 }
 
