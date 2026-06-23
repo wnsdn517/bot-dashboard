@@ -172,7 +172,12 @@ function renderUpdatedAt(ts) {
   const el = document.getElementById("last-updated");
   if (!el || !ts) return;
   const age = Math.floor(Date.now() / 1000) - ts;
-  el.textContent = `${age}초 전 갱신`;
+  let label;
+  if      (age < 60)       label = `${age}초 전`;
+  else if (age < 3600)     label = `${Math.floor(age / 60)}분 전`;
+  else if (age < 86400)    label = `${Math.floor(age / 3600)}시간 전`;
+  else                     label = `${Math.floor(age / 86400)}일 전`;
+  el.textContent = label + " 갱신";
   el.style.color = age > 180 ? "var(--red)" : "var(--muted)";
 }
 
