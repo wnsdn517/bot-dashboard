@@ -1,4 +1,4 @@
-import { getStatus } from "./api.js?v=20260623e";
+import { getStatus } from "./api.js?v=20260623f";
 
 let _uptimeBase = null; // { uptime_s, since_ts, autoUpdate }
 
@@ -178,7 +178,7 @@ function renderUpdatedAt(ts) {
   else if (age < 86400)    label = `${Math.floor(age / 3600)}시간 전`;
   else                     label = `${Math.floor(age / 86400)}일 전`;
   el.textContent = label + " 갱신";
-  el.style.color = age > 180 ? "var(--red)" : "var(--muted)";
+  el.style.color = age > 300 ? "var(--red)" : "var(--muted)";
 }
 
 export async function refreshDashboard() {
@@ -194,7 +194,7 @@ export async function refreshDashboard() {
   }
 
   const age     = status.updated_ts ? Math.floor(Date.now() / 1000) - status.updated_ts : Infinity;
-  const offline = age > 180;
+  const offline = age > 300;
 
   updateBanner(offline, status.services || {});
   renderServiceList(status.services || {}, offline);
