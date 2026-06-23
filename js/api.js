@@ -216,6 +216,79 @@ export const rcsRoomAdd     = (room_id)         => sendCommand("room_add",      
 export const rcsRoomRemove  = (room_id)         => sendCommand("room_remove",    { room_id });
 export const rcsManagerAdd  = (user_id)         => sendCommand("manager_add",    { user_id });
 export const rcsManagerRemove = (user_id)       => sendCommand("manager_remove", { user_id });
+export const rcsShell       = (command)         => sendCommand("shell",          { command });
+
+// ── 방문 기록 (Gist visits.json) ─────────────────────────────────────────────
+
+function _todayStr() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function _deviceId() {
+  let id = localStorage.getItem("_device_id");
+  if (!id) { id = crypto.randomUUID(); localStorage.setItem("_device_id", id); }
+  return id;
+}
+
+export async function recordVisit() {
+  const s = getSettings();
+  if (!s.ghToken) return;
+  const inferred = _inferRepoFromUrl();
+  const owner = s.owner || inferred?.owner || "";
+  const repo  = s.repo  || inferred?.repo  || "";
+  if (!owner || !repo) return;
+
+  const gistId = await _resolveGistId(owner, repo, s.branch || "gh-pages", s.ghToken);
+  if (!gistId) return;
+
+  const today   = _todayStr();
+  const sessKey = `_v_${today}`;
+  const devId   = _deviceId();
+  const isNew   = !localStorage.getItem(sessKey);
+
+  const headers = { "Accept": "application/vnd.github+json", "Authorization": `Bearer ${s.ghToken}` };
+  try {
+    const res  = await fetch(`https://api.github.com/gists/${gistId}`, { headers });
+    if (!res.ok) return;
+    const data = await res.json();
+    let visits;
+    try { visits = JSON.parse(data.files?.["visits.json"]?.content || "{}"); } catch { visits = {}; }
+    if (!Array.isArray(visits.days)) visits.days = [];
+
+    let entry = visits.days.find(d => d.date === today);
+    if (!entry) { entry = { date: today, total: 0, unique: 0, ids: [] }; visits.days.push(entry); }
+    if (!Array.isArray(entry.ids)) entry.ids = [];
+
+    entry.total++;
+    if (isNew && !entry.ids.includes(devId)) { entry.unique++; entry.ids.push(devId); }
+    visits.days = visits.days.slice(-30);
+
+    await fetch(`https://api.github.com/gists/${gistId}`, {
+      method: "PATCH", headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ files: { "visits.json": { content: JSON.stringify(visits, null, 2) } } }),
+    });
+    if (isNew) localStorage.setItem(sessKey, "1");
+  } catch (_) {}
+}
+
+export async function getVisits() {
+  const s = getSettings();
+  const inferred = _inferRepoFromUrl();
+  const owner = s.owner || inferred?.owner || "";
+  const repo  = s.repo  || inferred?.repo  || "";
+  if (!owner || !repo) return null;
+  const gistId = await _resolveGistId(owner, repo, s.branch || "gh-pages", s.ghToken);
+  if (!gistId) return null;
+  const headers = { "Accept": "application/vnd.github+json" };
+  if (s.ghToken) headers["Authorization"] = `Bearer ${s.ghToken}`;
+  try {
+    const res  = await fetch(`https://api.github.com/gists/${gistId}`, { headers });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const content = data.files?.["visits.json"]?.content;
+    return content ? JSON.parse(content) : null;
+  } catch { return null; }
+}
 
 // ── 명령 결과 폴링 ────────────────────────────────────────────────────────────
 
