@@ -6,6 +6,15 @@
 const LS_API = "nyang_api_base";
 const LS_TOKEN = "nyang_owner_token";
 
+// 봇이 주기적으로 상태를 푸시하는 Gist (gh-pages 등 어디서든 읽힘 — 봇 서버 불필요)
+const GIST_ID = "dc6ae3a8ab59432353bd21e1f4d4b4f4";
+const GIST_API = "https://api.github.com/gists/" + GIST_ID;
+const SERVICE_LABELS = {
+  server: "Iris 서버", frida: "Frida", kakao: "KakaoTalk",
+  botprocess: "봇 프로세스", frida_hook: "Frida 후킹",
+};
+
+function hasBotApi() { return !!localStorage.getItem(LS_API); }
 function apiBase() {
   return (localStorage.getItem(LS_API) || window.location.origin).replace(/\/$/, "");
 }
@@ -39,16 +48,57 @@ document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () 
 
 /* ── 상태 ── */
 async function loadStatus() {
+  // 봇 API 주소가 명시되면 풍부한 데이터(장애 타임라인 포함)를, 아니면 Gist 를 읽는다.
+  if (hasBotApi()) {
+    try {
+      const [st, up] = await Promise.all([api("/api/status"), api("/api/uptime")]);
+      renderBanner(st, up); renderServices(st, up); renderIncidents(up);
+      return;
+    } catch (e) { /* 봇 API 실패 → Gist 폴백 */ }
+  }
   try {
-    const [st, up] = await Promise.all([api("/api/status"), api("/api/uptime")]);
-    renderBanner(st, up);
-    renderServices(st, up);
-    renderIncidents(up);
+    await loadStatusFromGist();
   } catch (e) {
-    $("banner-title").textContent = "서버에 연결할 수 없음";
-    $("banner-meta").textContent = apiBase() + " — " + e.message;
+    $("banner-title").textContent = "상태를 불러올 수 없음";
+    $("banner-meta").textContent = e.message;
     $("status-banner").className = "banner banner-down";
   }
+}
+
+async function loadStatusFromGist() {
+  const res = await fetch(GIST_API, { headers: { "Accept": "application/vnd.github+json" } });
+  if (!res.ok) throw new Error("Gist HTTP " + res.status);
+  const gist = await res.json();
+  const file = (gist.files || {})["status.json"];
+  if (!file) throw new Error("status.json 없음");
+  const data = JSON.parse(file.content);
+  const services = data.services || {};
+  const keys = Object.keys(services);
+  const avails = keys.map((k) => services[k].availability ?? 0);
+  const overall = avails.length ? avails.reduce((a, b) => a + b, 0) / avails.length : 100;
+  const down = keys.filter((k) => !services[k].running);
+
+  const st = {
+    uptime_s: data.uptime_s || 0,
+    blocked: down.length > 0,
+    services,
+    service_labels: SERVICE_LABELS,
+    ts: data.updated_at || "",
+  };
+  const up = {
+    samples: Math.max(...keys.map((k) => services[k].history_count || 0), 0),
+    overall_uptime: Math.round(overall * 100) / 100,
+    services: Object.fromEntries(keys.map((k) => [k, {
+      label: SERVICE_LABELS[k] || k, uptime: services[k].availability ?? 0,
+    }])),
+    // Gist 에는 장애 타임라인이 없어 현재 다운 서비스만 표기
+    incidents: down.map((k) => ({
+      start: data.updated_at || "", end: data.updated_at || "",
+      samples: services[k].miss_count || 0, down: [SERVICE_LABELS[k] || k],
+    })),
+  };
+  renderBanner(st, up); renderServices(st, up); renderIncidents(up);
+  $("banner-meta").textContent += " · Gist 기준" + (data.updated_at ? ` (${data.updated_at})` : "");
 }
 
 function renderBanner(st, up) {
@@ -122,7 +172,10 @@ async function loadRequests() {
     $("req-severity").value = "보통";
     renderRequests();
   } catch (e) {
-    $("req-list").innerHTML = `<div class="muted">불러오기 실패: ${esc(e.message)}</div>`;
+    const hint = hasBotApi()
+      ? `불러오기 실패: ${esc(e.message)}`
+      : "기능 요청은 봇 서버 연결이 필요합니다. 하단 \"API 서버 주소 설정\"에서 봇 주소를 입력하세요.";
+    $("req-list").innerHTML = `<div class="muted">${hint}</div>`;
   }
 }
 
