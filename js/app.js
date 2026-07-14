@@ -13,7 +13,7 @@ const LS_TOKEN = "nyang_owner_token";
 // — 이전 버전은 몇 주 전 데이터도 "모든 서비스 정상"으로 표시하는 문제가 있었다.
 const FALLBACK_GIST_ID = "dc6ae3a8ab59432353bd21e1f4d4b4f4";
 const STALE_WARN_S = 3 * 60;
-const STALE_DOWN_S = 15 * 60;
+const STALE_DOWN_S = 5 * 60;
 const SERVICE_LABELS = {
   server: "Iris 서버", frida: "Frida", kakao: "KakaoTalk",
   botprocess: "봇 프로세스", frida_hook: "Frida 후킹",
