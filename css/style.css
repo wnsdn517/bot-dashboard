@@ -229,3 +229,25 @@ body {
   background: repeating-linear-gradient(45deg, var(--red) 0 3px, #7a1c1c 3px 6px) !important;
   min-width: 6px;
 }
+
+/* ── 진행 중 장애 상단 배너 (v5) ── */
+.incident-topbar {
+  display: flex; align-items: flex-start; gap: 10px;
+  background: rgba(229,83,75,.12); border: 1px solid rgba(229,83,75,.5);
+  border-left: 4px solid var(--red); border-radius: 12px;
+  padding: 12px 14px; margin-bottom: 14px;
+}
+.incident-topbar .it-body { flex: 1; }
+.incident-topbar .it-title { font-weight: 700; font-size: 14px; color: var(--red); }
+.incident-topbar .it-desc { font-size: 12px; color: var(--text); margin-top: 3px; opacity: .85; }
+.incident-topbar .it-close {
+  background: none; border: 0; color: var(--muted); font-size: 18px;
+  cursor: pointer; line-height: 1; padding: 0 2px;
+}
+.incident-topbar .it-close:hover { color: var(--text); }
+
+/* 90일 고정 그리드 — 칸이 많아도 한 줄에 균등 분배 */
+.svc-hist { gap: 1px; }
+.svc-hist > i { flex: 1 1 0; min-width: 0; }
+.svc-hist > i.slot-gap { flex: 0 0 6px; min-width: 6px; }
+.svc-uptime.dim { color: var(--gray); opacity: .6; }

@@ -201,8 +201,14 @@ function renderStatus(data, source) {
   if (data.updated_at) chips.push("🕒 " + data.updated_at);
   $("status-chips").innerHTML = chips.map((c) => `<span class="info-chip">${esc(c)}</span>`).join("");
 
-  // 서비스 행 — 일별(90일) 우선, 없으면 시간별(30시간). 오프라인 갭은 끝에 빨간 슬롯으로.
+  // 서비스 행 — 90일 일별 뷰 고정. daily 없으면 90칸 '미기록' 틀 + 시간별 데이터 병기.
   const gap = offlineGap(data);
+  const anyDaily = keys.some((k) => Array.isArray(services[k].daily) && services[k].daily.length);
+  const unitEl = $("svc-unit");
+  if (unitEl) unitEl.textContent = anyDaily
+    ? "(최근 90일, 1칸=1일)"
+    : "(90일 기록 수집 중 · 아래는 최근 30시간)";
+
   const grid = $("svc-grid");
   if (!keys.length) { grid.innerHTML = '<div class="muted">데이터 없음</div>'; return; }
   grid.innerHTML = keys.map((k) => {
@@ -210,7 +216,6 @@ function renderStatus(data, source) {
     const disabled = !!s.disabled;
     const running = !!s.running;
     const pct = s.availability ?? 0;
-    const daily = Array.isArray(s.daily) ? s.daily : null;
     const state = disabled
       ? '<span class="svc-state state-off">미사용</span>'
       : dead
@@ -219,44 +224,64 @@ function renderStatus(data, source) {
           ? '<span class="svc-state state-up">정상</span>'
           : '<span class="svc-state state-down">다운</span>';
 
-    let slotsHtml, axisHtml, unit;
-    if (daily && daily.length) {
-      unit = "90일";
-      slotsHtml = daily.map((slot) => {
-        const c = slot.color || "none";
-        const bg = c === "none" ? "var(--slot-none)" : (HIST_COLORS[c] || "var(--gray)");
-        const tip = c === "none" ? `${fmtDay(slot.day)} · 기록 없음`
-          : `${fmtDay(slot.day)} · 가동률 ${slot.uptime != null ? slot.uptime + "%" : c}`;
-        return `<i style="background:${bg}" title="${esc(tip)}"></i>`;
-      }).join("");
-      axisHtml = `<div class="svc-axis"><span>${esc(fmtDay(daily[0].day))}</span><span>오늘</span></div>`;
-    } else {
-      unit = "30시간";
-      const hist = Array.isArray(s.history) ? s.history : [];
-      const times = slotTimes(data, hist.length);
-      slotsHtml = hist.length
-        ? hist.map((c, i) => `<i style="background:${HIST_COLORS[c] || "var(--gray)"}" title="${esc(fmtHour(times[i]))} · ${esc(c)}"></i>`).join("")
-        : '<span class="muted small">아직 히스토리 없음</span>';
-      axisHtml = hist.length
-        ? `<div class="svc-axis"><span>${esc(fmtHour(times[0]))}</span><span>${esc(fmtHour(times[times.length - 1]))}</span></div>`
-        : "";
-    }
-    // 오프라인 갭 표시 (미사용 서비스 제외) — 타임라인 끝에 '미수신' 빨간 슬롯 1칸
+    // 90칸 고정: daily가 있으면 최근 90일로 패딩(앞을 none), 없으면 전부 none.
+    const daily90 = padDaily(Array.isArray(s.daily) ? s.daily : []);
+    const slotsHtml = daily90.map((slot) => {
+      const c = slot.color || "none";
+      const bg = c === "none" ? "var(--slot-none)" : (HIST_COLORS[c] || "var(--gray)");
+      const tip = c === "none" ? `${fmtDay(slot.day)} · 기록 없음`
+        : `${fmtDay(slot.day)} · 가동률 ${slot.uptime != null ? slot.uptime + "%" : c}`;
+      return `<i style="background:${bg}" title="${esc(tip)}"></i>`;
+    }).join("");
+    const axisHtml = `<div class="svc-axis"><span>${esc(fmtDay(daily90[0].day))}</span><span>오늘</span></div>`;
+
+    // 오프라인 갭(미사용 제외) — 타임라인 끝에 '미수신' 빗금 슬롯. 무응답이면 가동률도 흐리게.
     const gapSlot = (gap && !disabled)
       ? `<i class="slot-gap" title="상태 미수신 ${fmtDuration(gap.seconds)} — 봇 오프라인"></i>` : "";
+    const uptimeHtml = disabled
+      ? '<span class="svc-uptime">—</span>'
+      : dead
+        ? '<span class="svc-uptime dim" title="상태 미수신 — 마지막 기록 기준">' + pct.toFixed(2) + "%</span>"
+        : '<span class="svc-uptime">' + pct.toFixed(2) + "%</span>";
 
     return `<div class="svc-row ${disabled ? "svc-disabled" : ""}">
       <div class="svc-head">
         <span class="svc-name">${esc(SERVICE_LABELS[k] || k)}</span>
-        <span class="svc-uptime">${disabled ? "—" : pct.toFixed(2) + "%"}</span>
+        ${uptimeHtml}
         ${state}
       </div>
-      <div class="svc-hist" data-unit="${unit}">${slotsHtml}${gapSlot}</div>
+      <div class="svc-hist" data-unit="90일">${slotsHtml}${gapSlot}</div>
       ${axisHtml}
     </div>`;
   }).join("");
 
   renderIncidents(data, keys, services, gap);
+}
+
+// daily 배열을 정확히 90칸으로 — 데이터가 모자라면 앞쪽을 '미기록'(none)으로 채운다.
+function padDaily(daily) {
+  const N = 90;
+  const base = new Date();
+  const out = [];
+  const byDay = {};
+  daily.forEach((s) => { if (s && s.day) byDay[s.day] = s; });
+  for (let i = N - 1; i >= 0; i--) {
+    const d = new Date(base); d.setDate(d.getDate() - i);
+    const ds = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    out.push(byDay[ds] || { day: ds, color: "none" });
+  }
+  return out;
+}
+
+function pushDay(incidents, label, daily, s, e, seg) {
+  const dayTs = (ds) => { const p = String(ds).split("-"); return Date.UTC(+p[0], +p[1] - 1, +p[2]) / 1000; };
+  const days = e - s + 1;
+  incidents.push({
+    title: label + (seg === "partial" ? " 부분 오류" : " 장애"),
+    startTs: dayTs(daily[s].day), endTs: dayTs(daily[e].day) + 86399,
+    dayMode: true, ongoing: false, partial: seg === "partial",
+    durStr: days === 1 ? "1일" : days + "일", icon: seg === "partial" ? "🟠" : "🔴",
+  });
 }
 
 function renderIncidents(data, keys, services, gap) {
@@ -279,19 +304,17 @@ function renderIncidents(data, keys, services, gap) {
     const label = SERVICE_LABELS[k] || k;
     const daily = Array.isArray(services[k].daily) ? services[k].daily : null;
     if (daily && daily.length) {
-      let start = -1;
+      // 같은 성격(red=장애 / orange=부분 오류)의 연속 구간을 묶는다
+      let start = -1, seg = null;
       for (let i = 0; i <= daily.length; i++) {
-        const bad = i < daily.length && isBad(daily[i].color);
-        if (bad && start < 0) start = i;
-        if (!bad && start >= 0) {
-          const days = i - start;
-          incidents.push({
-            title: label + " 장애",
-            startTs: dayTs(daily[start].day), endTs: dayTs(daily[i - 1].day) + 86399,
-            dayMode: true, ongoing: false,
-            durStr: days === 1 ? "1일" : days + "일", icon: "🟠",
-          });
-          start = -1;
+        const c = i < daily.length ? daily[i].color : null;
+        const kind = c === "red" ? "down" : c === "orange" ? "partial" : null;
+        if (kind && kind !== seg) {   // 종류가 바뀌면 이전 구간 마감
+          if (start >= 0) pushDay(incidents, label, daily, start, i - 1, seg);
+          start = i; seg = kind;
+        } else if (!kind && start >= 0) {
+          pushDay(incidents, label, daily, start, i - 1, seg);
+          start = -1; seg = null;
         }
       }
     } else {
@@ -313,6 +336,9 @@ function renderIncidents(data, keys, services, gap) {
       }
     }
   });
+
+  // 진행 중 장애는 헤드라인(상단 배너)에 — 닫기(X) 가능
+  renderTopbar(incidents.filter((i) => i.ongoing), data);
 
   if (!incidents.length) {
     list.innerHTML = '<div class="incident-empty">✓ 최근 기록에 장애가 없습니다.</div>';
@@ -338,6 +364,28 @@ function renderIncidents(data, keys, services, gap) {
       </div>
     </div>`;
   }).join("");
+}
+
+let _dismissedTopbar = "";
+function renderTopbar(ongoing, data) {
+  const bar = $("incident-topbar");
+  if (!ongoing.length) { bar.classList.add("hidden"); return; }
+  // 진행 중 장애 목록을 지문(sig)으로 — 같은 장애를 닫았으면 다시 안 띄운다
+  const sig = ongoing.map((i) => i.title).join("|") + "@" + Math.floor((data.updated_ts || 0) / 300);
+  if (_dismissedTopbar === sig) { bar.classList.add("hidden"); return; }
+  const top = ongoing[0];
+  const extra = ongoing.length > 1 ? ` 외 ${ongoing.length - 1}건` : "";
+  const when = top.dayMode ? top.durStr
+    : (top.startTs ? `${fmtHour(top.startTs)} ~ 현재 · ${top.durStr}` : top.durStr);
+  bar.className = "incident-topbar";
+  bar.innerHTML = `
+    <span class="ic-icon">🔴</span>
+    <div class="it-body">
+      <div class="it-title">진행 중: ${esc(top.title)}${esc(extra)}</div>
+      <div class="it-desc">${esc(when)}</div>
+    </div>
+    <button class="it-close" title="닫기">✕</button>`;
+  bar.querySelector(".it-close").onclick = () => { _dismissedTopbar = sig; bar.classList.add("hidden"); };
 }
 
 function renderFromBotApi(st, up) {
