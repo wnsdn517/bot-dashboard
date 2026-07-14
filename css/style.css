@@ -220,3 +220,12 @@ body {
 }
 .incident.ongoing { border-left-color: var(--red); background: rgba(229,83,75,.06); }
 .incident:not(.ongoing) { border-left-color: var(--orange); }
+
+/* ── 90일 슬롯 / 오프라인 갭 (v4) ── */
+:root { --slot-none: #2a303c; }
+.svc-hist { flex-wrap: nowrap; overflow: hidden; }
+.svc-hist > i { min-width: 2px; }
+.svc-hist > i.slot-gap {
+  background: repeating-linear-gradient(45deg, var(--red) 0 3px, #7a1c1c 3px 6px) !important;
+  min-width: 6px;
+}

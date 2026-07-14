@@ -122,10 +122,10 @@ async function loadStatus() {
   }
 }
 
-function isBad(color) { return color !== "green" && color !== "gray"; }
+function isBad(color) { return color !== "green" && color !== "gray" && color !== "none"; }
 
 function slotTimes(data, count) {
-  // 각 히스토리 슬롯의 시각 복원: history_ts = 마지막 슬롯 기록 시각, 간격 1시간
+  // 시간별 슬롯의 시각 복원: history_ts = 마지막 슬롯 기록 시각, 간격 1시간
   const interval = Number(data.history_interval_s || 3600);
   const last = Number(data.history_ts || data.updated_ts || Math.floor(Date.now() / 1000));
   const out = [];
@@ -136,6 +136,26 @@ function slotTimes(data, count) {
 function fmtHour(ts) {
   const d = new Date(ts * 1000);
   return `${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}시`;
+}
+function fmtDay(dayStr) {
+  const p = String(dayStr).split("-");
+  return p.length === 3 ? `${p[1]}/${p[2]}` : dayStr;
+}
+
+// 오프라인 갭: 마지막 수신(updated_ts)부터 현재까지 STALE_DOWN_S 넘게 데이터가 없으면
+// 그 구간은 봇이 상태를 못 보낸 것 = 전체 다운. 히스토리는 봇이 살아있을 때만 찍히므로
+// 이 갭을 클라이언트가 '진행 중 장애'로 합성해야 한다 (안 그러면 마지막 초록에 얼어붙음).
+function offlineGap(data) {
+  const age = ageSeconds(data);
+  if (age == null || age <= STALE_DOWN_S) return null;
+  const last = Number(data.updated_ts || 0);
+  return { startTs: last, seconds: age };
+}
+function fmtDuration(s) {
+  if (s < 3600) return Math.round(s / 60) + "분";
+  if (s < 86400) return Math.round(s / 3600) + "시간";
+  const d = Math.floor(s / 86400), h = Math.round((s % 86400) / 3600);
+  return h ? `${d}일 ${h}시간` : `${d}일`;
 }
 
 function renderStatus(data, source) {
@@ -153,8 +173,8 @@ function renderStatus(data, source) {
   const b = $("status-banner");
   if (dead) {
     b.className = "banner banner-down";
-    $("banner-title").textContent = "봇 오프라인 추정";
-    $("banner-meta").textContent = `마지막 상태 수신 ${fmtAge(age)} (${data.updated_at || "?"}) · ${source}`;
+    $("banner-title").textContent = "봇 오프라인 (상태 미수신)";
+    $("banner-meta").textContent = `${fmtDuration(age)}째 상태 미수신 — 그동안 전체 서비스 다운 · 마지막 ${data.updated_at || "?"}`;
   } else if (stale) {
     b.className = "banner banner-stale";
     $("banner-title").textContent = "데이터 지연";
@@ -181,7 +201,8 @@ function renderStatus(data, source) {
   if (data.updated_at) chips.push("🕒 " + data.updated_at);
   $("status-chips").innerHTML = chips.map((c) => `<span class="info-chip">${esc(c)}</span>`).join("");
 
-  // 서비스 행 (statuspage 스타일) — 이름/상태 + 30시간 타임라인 + 축 라벨
+  // 서비스 행 — 일별(90일) 우선, 없으면 시간별(30시간). 오프라인 갭은 끝에 빨간 슬롯으로.
+  const gap = offlineGap(data);
   const grid = $("svc-grid");
   if (!keys.length) { grid.innerHTML = '<div class="muted">데이터 없음</div>'; return; }
   grid.innerHTML = keys.map((k) => {
@@ -189,72 +210,134 @@ function renderStatus(data, source) {
     const disabled = !!s.disabled;
     const running = !!s.running;
     const pct = s.availability ?? 0;
-    const hist = Array.isArray(s.history) ? s.history : [];
-    const times = slotTimes(data, hist.length);
+    const daily = Array.isArray(s.daily) ? s.daily : null;
     const state = disabled
       ? '<span class="svc-state state-off">미사용</span>'
       : dead
-        ? '<span class="svc-state state-off">?</span>'
+        ? '<span class="svc-state state-down">다운</span>'
         : running
           ? '<span class="svc-state state-up">정상</span>'
           : '<span class="svc-state state-down">다운</span>';
-    const slots = hist.length
-      ? hist.map((c, i) =>
-          `<i style="background:${HIST_COLORS[c] || "var(--gray)"}" title="${esc(fmtHour(times[i]))} · ${esc(c)}"></i>`
-        ).join("")
-      : '<span class="muted small">아직 히스토리 없음 (1시간마다 1칸)</span>';
-    const axis = hist.length
-      ? `<div class="svc-axis"><span>${esc(fmtHour(times[0]))}</span><span>${esc(fmtHour(times[times.length - 1]))}</span></div>`
-      : "";
+
+    let slotsHtml, axisHtml, unit;
+    if (daily && daily.length) {
+      unit = "90일";
+      slotsHtml = daily.map((slot) => {
+        const c = slot.color || "none";
+        const bg = c === "none" ? "var(--slot-none)" : (HIST_COLORS[c] || "var(--gray)");
+        const tip = c === "none" ? `${fmtDay(slot.day)} · 기록 없음`
+          : `${fmtDay(slot.day)} · 가동률 ${slot.uptime != null ? slot.uptime + "%" : c}`;
+        return `<i style="background:${bg}" title="${esc(tip)}"></i>`;
+      }).join("");
+      axisHtml = `<div class="svc-axis"><span>${esc(fmtDay(daily[0].day))}</span><span>오늘</span></div>`;
+    } else {
+      unit = "30시간";
+      const hist = Array.isArray(s.history) ? s.history : [];
+      const times = slotTimes(data, hist.length);
+      slotsHtml = hist.length
+        ? hist.map((c, i) => `<i style="background:${HIST_COLORS[c] || "var(--gray)"}" title="${esc(fmtHour(times[i]))} · ${esc(c)}"></i>`).join("")
+        : '<span class="muted small">아직 히스토리 없음</span>';
+      axisHtml = hist.length
+        ? `<div class="svc-axis"><span>${esc(fmtHour(times[0]))}</span><span>${esc(fmtHour(times[times.length - 1]))}</span></div>`
+        : "";
+    }
+    // 오프라인 갭 표시 (미사용 서비스 제외) — 타임라인 끝에 '미수신' 빨간 슬롯 1칸
+    const gapSlot = (gap && !disabled)
+      ? `<i class="slot-gap" title="상태 미수신 ${fmtDuration(gap.seconds)} — 봇 오프라인"></i>` : "";
+
     return `<div class="svc-row ${disabled ? "svc-disabled" : ""}">
       <div class="svc-head">
         <span class="svc-name">${esc(SERVICE_LABELS[k] || k)}</span>
         <span class="svc-uptime">${disabled ? "—" : pct.toFixed(2) + "%"}</span>
         ${state}
       </div>
-      <div class="svc-hist">${slots}</div>
-      ${axis}
+      <div class="svc-hist" data-unit="${unit}">${slotsHtml}${gapSlot}</div>
+      ${axisHtml}
     </div>`;
   }).join("");
 
-  renderIncidentsFromHistory(data, keys, services);
+  renderIncidents(data, keys, services, gap);
 }
 
-function renderIncidentsFromHistory(data, keys, services) {
-  // 기록(히스토리 슬롯) 기반 장애 구간 복원 — 연속된 비정상 슬롯을 하나의 장애로 묶는다
+function renderIncidents(data, keys, services, gap) {
   const list = $("incident-list");
   const incidents = [];
+
+  // ① 오프라인 갭 = 최우선 장애 (봇이 상태를 못 보낸 구간 = 전체 다운)
+  if (gap) {
+    incidents.push({
+      title: "봇 오프라인 (전체 상태 미수신)",
+      startTs: gap.startTs, ongoing: true,
+      durStr: fmtDuration(gap.seconds), icon: "🔴",
+    });
+  }
+
+  // ② 서비스별 장애 구간 복원 — 일별(90일) 우선, 없으면 시간별(30시간)
+  const dayTs = (ds) => { const p = String(ds).split("-"); return Date.UTC(+p[0], +p[1] - 1, +p[2]) / 1000; };
   keys.forEach((k) => {
-    if (services[k].disabled) return;   // 미사용 서비스는 장애로 치지 않음
-    const hist = Array.isArray(services[k].history) ? services[k].history : [];
-    const times = slotTimes(data, hist.length);
-    let start = -1;
-    for (let i = 0; i <= hist.length; i++) {
-      const bad = i < hist.length && isBad(hist[i]);
-      if (bad && start < 0) start = i;
-      if (!bad && start >= 0) {
-        incidents.push({
-          service: SERVICE_LABELS[k] || k,
-          startTs: times[start], endTs: times[i - 1],
-          hours: i - start,
-          ongoing: i === hist.length && isBad(hist[hist.length - 1]),
-        });
-        start = -1;
+    if (services[k].disabled) return;
+    const label = SERVICE_LABELS[k] || k;
+    const daily = Array.isArray(services[k].daily) ? services[k].daily : null;
+    if (daily && daily.length) {
+      let start = -1;
+      for (let i = 0; i <= daily.length; i++) {
+        const bad = i < daily.length && isBad(daily[i].color);
+        if (bad && start < 0) start = i;
+        if (!bad && start >= 0) {
+          const days = i - start;
+          incidents.push({
+            title: label + " 장애",
+            startTs: dayTs(daily[start].day), endTs: dayTs(daily[i - 1].day) + 86399,
+            dayMode: true, ongoing: false,
+            durStr: days === 1 ? "1일" : days + "일", icon: "🟠",
+          });
+          start = -1;
+        }
+      }
+    } else {
+      const hist = Array.isArray(services[k].history) ? services[k].history : [];
+      const times = slotTimes(data, hist.length);
+      let start = -1;
+      for (let i = 0; i <= hist.length; i++) {
+        const bad = i < hist.length && isBad(hist[i]);
+        if (bad && start < 0) start = i;
+        if (!bad && start >= 0) {
+          const ongoing = i === hist.length && isBad(hist[hist.length - 1]);
+          incidents.push({
+            title: label + (ongoing ? " 장애 진행 중" : " 장애"),
+            startTs: times[start], endTs: times[i - 1], ongoing,
+            durStr: "약 " + (i - start) + "시간", icon: ongoing ? "🔴" : "🟠",
+          });
+          start = -1;
+        }
       }
     }
   });
+
   if (!incidents.length) {
-    list.innerHTML = '<div class="incident-empty">✓ 최근 30시간 내 기록된 장애가 없습니다.</div>';
+    list.innerHTML = '<div class="incident-empty">✓ 최근 기록에 장애가 없습니다.</div>';
     return;
   }
-  incidents.sort((a, b) => b.endTs - a.endTs);
-  list.innerHTML = incidents.slice(0, 12).map((i) => `<div class="incident ${i.ongoing ? "ongoing" : ""}">
-    <span class="ic-icon">${i.ongoing ? "🔴" : "🟠"}</span>
-    <div class="ic-body">
-      <div class="ic-title">${esc(i.service)} ${i.ongoing ? "장애 진행 중" : "장애"}</div>
-      <div class="ic-time">${esc(fmtHour(i.startTs))} ~ ${i.ongoing ? "현재" : esc(fmtHour(i.endTs))} · 약 ${i.hours}시간</div>
-    </div>
-  </div>`).join("");
+  incidents.sort((a, b) => (b.startTs || 0) - (a.startTs || 0));
+  list.innerHTML = incidents.slice(0, 15).map((i) => {
+    let when;
+    if (i.dayMode) {
+      const s = fmtDay(new Date(i.startTs * 1000).toISOString().slice(0, 10));
+      const e = fmtDay(new Date(i.endTs * 1000).toISOString().slice(0, 10));
+      when = (s === e ? s : `${s} ~ ${e}`) + ` · ${i.durStr}`;
+    } else if (i.endTs != null) {
+      when = `${fmtHour(i.startTs)} ~ ${i.ongoing ? "현재" : fmtHour(i.endTs)} · ${i.durStr}`;
+    } else {
+      when = `${fmtHour(i.startTs)} ~ 현재 · ${i.durStr}`;
+    }
+    return `<div class="incident ${i.ongoing ? "ongoing" : ""}">
+      <span class="ic-icon">${i.icon}</span>
+      <div class="ic-body">
+        <div class="ic-title">${esc(i.title)}</div>
+        <div class="ic-time">${esc(when)}</div>
+      </div>
+    </div>`;
+  }).join("");
 }
 
 function renderFromBotApi(st, up) {
@@ -268,6 +351,7 @@ function renderFromBotApi(st, up) {
   };
   renderStatus(data, "봇 API");
 }
+
 
 /* ── 기능 요청 ── */
 let META = { categories: ["버그","기능","개선","기타"], severities: ["낮음","보통","높음","긴급"], statuses: ["검토대기","진행중","해결","보류","미해결"] };
