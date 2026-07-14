@@ -174,7 +174,7 @@ function renderStatus(data, source) {
   if (dead) {
     b.className = "banner banner-down";
     $("banner-title").textContent = "봇 오프라인 (상태 미수신)";
-    $("banner-meta").textContent = `${fmtDuration(age)}째 상태 미수신 — 그동안 전체 서비스 다운 · 마지막 ${data.updated_at || "?"}`;
+    $("banner-meta").textContent = `${fmtDuration(age)}째 상태 미수신 — 서비스 다운 · 마지막 ${data.updated_at || "?"}`;
   } else if (stale) {
     b.className = "banner banner-stale";
     $("banner-title").textContent = "데이터 지연";
