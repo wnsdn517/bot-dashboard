@@ -201,13 +201,11 @@ function renderStatus(data, source) {
   if (data.updated_at) chips.push("🕒 " + data.updated_at);
   $("status-chips").innerHTML = chips.map((c) => `<span class="info-chip">${esc(c)}</span>`).join("");
 
-  // 서비스 행 — 90일 일별 뷰 고정. daily 없으면 90칸 '미기록' 틀 + 시간별 데이터 병기.
+  // 서비스 행 — 90일 일별 뷰 고정. daily가 없는 날은 시간별(hourly) 기록을 일별로
+  // 집계해 채운다 (봇이 daily를 아직 안 보내도 최근 며칠은 hourly에서 복원됨).
   const gap = offlineGap(data);
-  const anyDaily = keys.some((k) => Array.isArray(services[k].daily) && services[k].daily.length);
   const unitEl = $("svc-unit");
-  if (unitEl) unitEl.textContent = anyDaily
-    ? "(최근 90일, 1칸=1일)"
-    : "(90일 기록 수집 중 · 아래는 최근 30시간)";
+  if (unitEl) unitEl.textContent = "(최근 90일, 1칸=1일)";
 
   const grid = $("svc-grid");
   if (!keys.length) { grid.innerHTML = '<div class="muted">데이터 없음</div>'; return; }
@@ -224,13 +222,14 @@ function renderStatus(data, source) {
           ? '<span class="svc-state state-up">정상</span>'
           : '<span class="svc-state state-down">다운</span>';
 
-    // 90칸 고정: daily가 있으면 최근 90일로 패딩(앞을 none), 없으면 전부 none.
-    const daily90 = padDaily(Array.isArray(s.daily) ? s.daily : []);
+    // 90칸 고정: daily 우선, 없는 날은 hourly 집계로 보충, 그래도 없으면 '미기록'.
+    const daily90 = buildDaily90(s, data);
     const slotsHtml = daily90.map((slot) => {
       const c = slot.color || "none";
       const bg = c === "none" ? "var(--slot-none)" : (HIST_COLORS[c] || "var(--gray)");
+      const src = slot.fromHourly ? " (시간별 집계)" : "";
       const tip = c === "none" ? `${fmtDay(slot.day)} · 기록 없음`
-        : `${fmtDay(slot.day)} · 가동률 ${slot.uptime != null ? slot.uptime + "%" : c}`;
+        : `${fmtDay(slot.day)} · 가동률 ${slot.uptime != null ? slot.uptime + "%" : c}${src}`;
       return `<i style="background:${bg}" title="${esc(tip)}"></i>`;
     }).join("");
     const axisHtml = `<div class="svc-axis"><span>${esc(fmtDay(daily90[0].day))}</span><span>오늘</span></div>`;
@@ -258,17 +257,33 @@ function renderStatus(data, source) {
   renderIncidents(data, keys, services, gap);
 }
 
-// daily 배열을 정확히 90칸으로 — 데이터가 모자라면 앞쪽을 '미기록'(none)으로 채운다.
-function padDaily(daily) {
-  const N = 90;
-  const base = new Date();
-  const out = [];
+// 서비스의 90일 슬롯 생성 — daily 우선, 없는 날은 hourly(30시간) 기록을 일별로 집계,
+// 그래도 없으면 '미기록'(none). 봇이 daily를 못 보낸 상황에서도 최근 며칠이 보인다.
+function buildDaily90(s, data) {
+  const pad = (n) => String(n).padStart(2, "0");
+  const dayStr = (dt) => `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
+
   const byDay = {};
-  daily.forEach((s) => { if (s && s.day) byDay[s.day] = s; });
+  (Array.isArray(s.daily) ? s.daily : []).forEach((x) => { if (x && x.day) byDay[x.day] = x; });
+
+  // hourly history를 날짜별 최악 색으로 집계
+  const rank = { green: 0, gray: 0, orange: 1, red: 2 };
+  const hist = Array.isArray(s.history) ? s.history : [];
+  const times = slotTimes(data, hist.length);
+  const hourlyDay = {};
+  hist.forEach((c, i) => {
+    if (!c || c === "none") return;
+    const ds = dayStr(new Date(times[i] * 1000));
+    if (hourlyDay[ds] == null || (rank[c] ?? 0) > (rank[hourlyDay[ds]] ?? 0)) hourlyDay[ds] = c;
+  });
+
+  const N = 90, base = new Date(), out = [];
   for (let i = N - 1; i >= 0; i--) {
     const d = new Date(base); d.setDate(d.getDate() - i);
-    const ds = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-    out.push(byDay[ds] || { day: ds, color: "none" });
+    const ds = dayStr(d);
+    if (byDay[ds]) out.push(byDay[ds]);
+    else if (hourlyDay[ds]) out.push({ day: ds, color: hourlyDay[ds], fromHourly: true });
+    else out.push({ day: ds, color: "none" });
   }
   return out;
 }
