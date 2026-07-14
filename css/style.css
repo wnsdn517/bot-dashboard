@@ -202,3 +202,21 @@ body {
   flex: 1; min-width: 3px; border-radius: 2px; background: var(--gray); opacity: .9;
 }
 .svc-hist > i:hover { opacity: 1; transform: scaleY(1.15); }
+
+/* ── statuspage 스타일 서비스 행 (v3) ── */
+.svc-grid { display: flex; flex-direction: column; gap: 10px; }
+.svc-row {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 12px; padding: 14px 16px;
+}
+.svc-row .svc-head { display: flex; align-items: center; gap: 10px; }
+.svc-row .svc-name { font-weight: 600; font-size: 14px; flex: 1; }
+.svc-uptime { font-size: 13px; font-weight: 700; color: var(--muted); }
+.state-off { background: rgba(110,118,129,.2); color: var(--gray); }
+.svc-disabled { opacity: .55; }
+.svc-axis {
+  display: flex; justify-content: space-between;
+  font-size: 10px; color: var(--muted); margin-top: 4px;
+}
+.incident.ongoing { border-left-color: var(--red); background: rgba(229,83,75,.06); }
+.incident:not(.ongoing) { border-left-color: var(--orange); }

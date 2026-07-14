@@ -122,12 +122,29 @@ async function loadStatus() {
   }
 }
 
+function isBad(color) { return color !== "green" && color !== "gray"; }
+
+function slotTimes(data, count) {
+  // 각 히스토리 슬롯의 시각 복원: history_ts = 마지막 슬롯 기록 시각, 간격 1시간
+  const interval = Number(data.history_interval_s || 3600);
+  const last = Number(data.history_ts || data.updated_ts || Math.floor(Date.now() / 1000));
+  const out = [];
+  for (let i = 0; i < count; i++) out.push(last - (count - 1 - i) * interval);
+  return out;
+}
+
+function fmtHour(ts) {
+  const d = new Date(ts * 1000);
+  return `${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}시`;
+}
+
 function renderStatus(data, source) {
   const services = data.services || {};
   const keys = Object.keys(services);
-  const avails = keys.map((k) => services[k].availability ?? 0);
+  const active = keys.filter((k) => !services[k].disabled);
+  const avails = active.map((k) => services[k].availability ?? 0);
   const overall = avails.length ? avails.reduce((a, b) => a + b, 0) / avails.length : 0;
-  const down = keys.filter((k) => !services[k].running);
+  const down = active.filter((k) => !services[k].running);
   const age = ageSeconds(data);
   const stale = age != null && age > STALE_WARN_S;
   const dead = age != null && age > STALE_DOWN_S;
@@ -164,47 +181,80 @@ function renderStatus(data, source) {
   if (data.updated_at) chips.push("🕒 " + data.updated_at);
   $("status-chips").innerHTML = chips.map((c) => `<span class="info-chip">${esc(c)}</span>`).join("");
 
-  // 서비스 카드 + 30시간 히스토리 타임라인
+  // 서비스 행 (statuspage 스타일) — 이름/상태 + 30시간 타임라인 + 축 라벨
   const grid = $("svc-grid");
   if (!keys.length) { grid.innerHTML = '<div class="muted">데이터 없음</div>'; return; }
   grid.innerHTML = keys.map((k) => {
     const s = services[k] || {};
+    const disabled = !!s.disabled;
     const running = !!s.running;
     const pct = s.availability ?? 0;
-    const color = pct >= 95 ? "var(--green)" : pct >= 80 ? "var(--orange)" : "var(--red)";
     const hist = Array.isArray(s.history) ? s.history : [];
+    const times = slotTimes(data, hist.length);
+    const state = disabled
+      ? '<span class="svc-state state-off">미사용</span>'
+      : dead
+        ? '<span class="svc-state state-off">?</span>'
+        : running
+          ? '<span class="svc-state state-up">정상</span>'
+          : '<span class="svc-state state-down">다운</span>';
     const slots = hist.length
-      ? hist.map((c) => `<i style="background:${HIST_COLORS[c] || "var(--gray)"}"></i>`).join("")
-      : '<span class="muted small">히스토리 없음</span>';
-    return `<div class="svc-card">
+      ? hist.map((c, i) =>
+          `<i style="background:${HIST_COLORS[c] || "var(--gray)"}" title="${esc(fmtHour(times[i]))} · ${esc(c)}"></i>`
+        ).join("")
+      : '<span class="muted small">아직 히스토리 없음 (1시간마다 1칸)</span>';
+    const axis = hist.length
+      ? `<div class="svc-axis"><span>${esc(fmtHour(times[0]))}</span><span>${esc(fmtHour(times[times.length - 1]))}</span></div>`
+      : "";
+    return `<div class="svc-row ${disabled ? "svc-disabled" : ""}">
       <div class="svc-head">
         <span class="svc-name">${esc(SERVICE_LABELS[k] || k)}</span>
-        <span class="svc-state ${running && !dead ? "state-up" : "state-down"}">${dead ? "?" : running ? "정상" : "다운"}</span>
+        <span class="svc-uptime">${disabled ? "—" : pct.toFixed(2) + "%"}</span>
+        ${state}
       </div>
-      <div class="svc-bar"><i style="width:${pct}%;background:${color}"></i></div>
-      <div class="svc-pct">가동률 ${pct.toFixed(2)}% · 표본 ${s.history_count || 0}개</div>
-      <div class="svc-hist" title="최근 ${hist.length}시간 (1칸=1시간, 오른쪽이 최신)">${slots}</div>
+      <div class="svc-hist">${slots}</div>
+      ${axis}
     </div>`;
   }).join("");
 
-  // 장애 요약 — 서비스별 히스토리에서 비정상 슬롯 집계
+  renderIncidentsFromHistory(data, keys, services);
+}
+
+function renderIncidentsFromHistory(data, keys, services) {
+  // 기록(히스토리 슬롯) 기반 장애 구간 복원 — 연속된 비정상 슬롯을 하나의 장애로 묶는다
   const list = $("incident-list");
-  const problems = keys.map((k) => {
+  const incidents = [];
+  keys.forEach((k) => {
+    if (services[k].disabled) return;   // 미사용 서비스는 장애로 치지 않음
     const hist = Array.isArray(services[k].history) ? services[k].history : [];
-    const bad = hist.filter((c) => c !== "green").length;
-    return { k, bad, total: hist.length };
-  }).filter((p) => p.bad > 0);
-  if (!problems.length) {
+    const times = slotTimes(data, hist.length);
+    let start = -1;
+    for (let i = 0; i <= hist.length; i++) {
+      const bad = i < hist.length && isBad(hist[i]);
+      if (bad && start < 0) start = i;
+      if (!bad && start >= 0) {
+        incidents.push({
+          service: SERVICE_LABELS[k] || k,
+          startTs: times[start], endTs: times[i - 1],
+          hours: i - start,
+          ongoing: i === hist.length && isBad(hist[hist.length - 1]),
+        });
+        start = -1;
+      }
+    }
+  });
+  if (!incidents.length) {
     list.innerHTML = '<div class="incident-empty">✓ 최근 30시간 내 기록된 장애가 없습니다.</div>';
-  } else {
-    list.innerHTML = problems.map((p) => `<div class="incident">
-      <span class="ic-icon">🔴</span>
-      <div class="ic-body">
-        <div class="ic-title">${esc(SERVICE_LABELS[p.k] || p.k)}</div>
-        <div class="ic-time">최근 ${p.total}시간 중 ${p.bad}시간 비정상</div>
-      </div>
-    </div>`).join("");
+    return;
   }
+  incidents.sort((a, b) => b.endTs - a.endTs);
+  list.innerHTML = incidents.slice(0, 12).map((i) => `<div class="incident ${i.ongoing ? "ongoing" : ""}">
+    <span class="ic-icon">${i.ongoing ? "🔴" : "🟠"}</span>
+    <div class="ic-body">
+      <div class="ic-title">${esc(i.service)} ${i.ongoing ? "장애 진행 중" : "장애"}</div>
+      <div class="ic-time">${esc(fmtHour(i.startTs))} ~ ${i.ongoing ? "현재" : esc(fmtHour(i.endTs))} · 약 ${i.hours}시간</div>
+    </div>
+  </div>`).join("");
 }
 
 function renderFromBotApi(st, up) {
