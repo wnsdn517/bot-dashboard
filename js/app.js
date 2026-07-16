@@ -222,26 +222,26 @@ function renderStatus(data, source) {
           ? '<span class="svc-state state-up">정상</span>'
           : '<span class="svc-state state-down">다운</span>';
 
-    // 90칸 고정: daily 우선, 없는 날은 hourly 집계로 보충, 그래도 없으면 '미기록'.
+    // 90칸 고정: daily 우선, 없는 날은 hourly 집계, 오프라인 날은 다운(빨강), 그래도 없으면 미기록.
     const daily90 = buildDaily90(s, data);
     const slotsHtml = daily90.map((slot) => {
       const c = slot.color || "none";
-      const bg = c === "none" ? "var(--slot-none)" : (HIST_COLORS[c] || "var(--gray)");
-      const src = slot.fromHourly ? " (시간별 집계)" : "";
+      const cls = c === "offline" ? ' class="slot-offline"' : "";
+      const bg = (c === "none") ? "var(--slot-none)"
+        : (c === "offline") ? "" : (HIST_COLORS[c] || "var(--gray)");
+      const style = bg ? ` style="background:${bg}"` : "";
       const tip = c === "none" ? `${fmtDay(slot.day)} · 기록 없음`
-        : `${fmtDay(slot.day)} · 가동률 ${slot.uptime != null ? slot.uptime + "%" : c}${src}`;
-      return `<i style="background:${bg}" title="${esc(tip)}"></i>`;
+        : c === "offline" ? `${fmtDay(slot.day)} · 봇 오프라인 (다운)`
+        : `${fmtDay(slot.day)} · 가동률 ${slot.uptime != null ? slot.uptime + "%" : c}${slot.fromHourly ? " (시간별 집계)" : ""}`;
+      return `<i${cls}${style} title="${esc(tip)}"></i>`;
     }).join("");
     const axisHtml = `<div class="svc-axis"><span>${esc(fmtDay(daily90[0].day))}</span><span>오늘</span></div>`;
 
-    // 오프라인 갭(미사용 제외) — 타임라인 끝에 '미수신' 빗금 슬롯. 무응답이면 가동률도 흐리게.
-    const gapSlot = (gap && !disabled)
-      ? `<i class="slot-gap" title="상태 미수신 ${fmtDuration(gap.seconds)} — 봇 오프라인"></i>` : "";
+    // 가동률은 90일 슬롯 기준으로 재계산 — 오프라인이 쌓이면 실제로 내려간다.
+    const svcPct = disabled ? null : computeUptime(daily90, pct);
     const uptimeHtml = disabled
       ? '<span class="svc-uptime">—</span>'
-      : dead
-        ? '<span class="svc-uptime dim" title="상태 미수신 — 마지막 기록 기준">' + pct.toFixed(2) + "%</span>"
-        : '<span class="svc-uptime">' + pct.toFixed(2) + "%</span>";
+      : '<span class="svc-uptime">' + svcPct.toFixed(2) + "%</span>";
 
     return `<div class="svc-row ${disabled ? "svc-disabled" : ""}">
       <div class="svc-head">
@@ -249,10 +249,15 @@ function renderStatus(data, source) {
         ${uptimeHtml}
         ${state}
       </div>
-      <div class="svc-hist" data-unit="90일">${slotsHtml}${gapSlot}</div>
+      <div class="svc-hist" data-unit="90일">${slotsHtml}</div>
       ${axisHtml}
     </div>`;
   }).join("");
+
+  // 전체 가동률도 90일 슬롯 기준 재계산 (활성 서비스 평균)
+  const overallPcts = active.map((k) => computeUptime(buildDaily90(services[k], data), services[k].availability ?? 0));
+  const overall2 = overallPcts.length ? overallPcts.reduce((a, b) => a + b, 0) / overallPcts.length : 0;
+  $("overall-uptime").textContent = overall2.toFixed(2) + "%";
 
   renderIncidents(data, keys, services, gap);
 }
@@ -277,15 +282,36 @@ function buildDaily90(s, data) {
     if (hourlyDay[ds] == null || (rank[c] ?? 0) > (rank[hourlyDay[ds]] ?? 0)) hourlyDay[ds] = c;
   });
 
+  // 오프라인이면 마지막 수신일 '다음날'부터 오늘까지는 봇이 죽어있던 날 = 다운(offline).
+  // (마지막 수신일 당일은 그날 낮까지 기록이 있으니 byDay/hourly로 그대로 둔다)
+  const gap = offlineGap(data);
+  const lastDayStr = gap ? dayStr(new Date(Number(data.updated_ts || 0) * 1000)) : null;
+
   const N = 90, base = new Date(), out = [];
   for (let i = N - 1; i >= 0; i--) {
     const d = new Date(base); d.setDate(d.getDate() - i);
     const ds = dayStr(d);
     if (byDay[ds]) out.push(byDay[ds]);
     else if (hourlyDay[ds]) out.push({ day: ds, color: hourlyDay[ds], fromHourly: true });
+    else if (gap && lastDayStr && ds > lastDayStr) out.push({ day: ds, color: "offline" });
     else out.push({ day: ds, color: "none" });
   }
   return out;
+}
+
+// 90일 슬롯에서 실제 가동률 재계산 — 오프라인/다운 날이 쌓일수록 % 가 실제로 떨어진다.
+// (봇이 얼려 보낸 availability 를 그대로 쓰면 오프라인이어도 100% 로 멈춰 있다.)
+function computeUptime(daily90, fallback) {
+  let score = 0, n = 0;
+  for (const slot of daily90) {
+    const c = slot.color;
+    if (c === "none" || c === "gray") continue;   // 기록 없음/미사용은 분모에서 제외
+    n++;
+    if (c === "green") score += 1;
+    else if (c === "orange") score += 0.98;        // 부분 오류는 거의 정상으로 가중
+    // red / offline → 0
+  }
+  return n ? (score / n) * 100 : (fallback ?? 0);
 }
 
 function pushDay(incidents, label, daily, s, e, seg) {

@@ -251,3 +251,8 @@ body {
 .svc-hist > i { flex: 1 1 0; min-width: 0; }
 .svc-hist > i.slot-gap { flex: 0 0 6px; min-width: 6px; }
 .svc-uptime.dim { color: var(--gray); opacity: .6; }
+
+/* ── 오프라인(다운) 슬롯 — 빨강 빗금 (v6) ── */
+.svc-hist > i.slot-offline {
+  background: repeating-linear-gradient(45deg, var(--red) 0 3px, #7a1c1c 3px 6px) !important;
+}
