@@ -4,7 +4,6 @@
 "use strict";
 
 const LS_API = "nyang_api_base";
-const LS_TOKEN = "nyang_owner_token";
 
 // ── 상태 데이터 ────────────────────────────────────────────────────────────
 // 1) data/meta.json 에서 gist id 자동 발견 (봇이 기록) → 2) Gist 읽기
@@ -22,21 +21,21 @@ const HIST_COLORS = {
   green: "var(--green)", gray: "var(--gray)", orange: "var(--orange)",
   red: "var(--red)", darkred: "#8b1e1e",
 };
+// 기능 요청/공지 — 이 저장소 자체(GitHub Issues, notice.json)로 서버 없이 동작.
+const ISSUES_REPO = "wnsdn517/bot-dashboard";
+const REQ_LABEL = "기능요청";
+const CATEGORY_OPTS = ["버그", "기능", "개선", "기타"];
+const SEVERITY_OPTS = ["낮음", "보통", "높음", "긴급"];
 let _gistId = null;
 
 function hasBotApi() { return !!localStorage.getItem(LS_API); }
 function apiBase() {
   return (localStorage.getItem(LS_API) || window.location.origin).replace(/\/$/, "");
 }
-function token() { return localStorage.getItem(LS_TOKEN) || ""; }
-function setToken(t) { t ? localStorage.setItem(LS_TOKEN, t) : localStorage.removeItem(LS_TOKEN); }
-function isOwner() { return !!token(); }
 
 async function api(path, opts = {}) {
   const headers = Object.assign({ "Content-Type": "application/json" }, opts.headers || {});
-  if (isOwner()) headers["Authorization"] = "Bearer " + token();
   const res = await fetch(apiBase() + path, Object.assign({}, opts, { headers }));
-  if (res.status === 401) { setToken(""); reflectOwner(); }
   let data = null;
   try { data = await res.json(); } catch (_) {}
   if (!res.ok) throw new Error((data && data.error) || ("HTTP " + res.status));
@@ -442,97 +441,83 @@ function renderFromBotApi(st, up) {
 }
 
 
-/* ── 기능 요청 ── */
-let META = { categories: ["버그","기능","개선","기타"], severities: ["낮음","보통","높음","긴급"], statuses: ["검토대기","진행중","해결","보류","미해결"] };
+/* ── 기능 요청 (GitHub Issues 기반 — 서버 불필요) ──
+ * 등록: 이 저장소의 "새 이슈" 창을 미리 채워서 연다 (제출자가 자신의 GitHub
+ * 계정으로 직접 생성 — 봇/서버가 끼어들 필요가 없다).
+ * 열람: GitHub REST API를 인증 없이 그대로 fetch (공개 저장소라 가능).
+ * 오너 관리(라벨링·닫기 등)는 github.com에서 직접 — 별도 로그인/승인 절차 불필요.
+ */
 let REQS = [];
 let FILTER = "all";
 
 function fillSelect(el, opts) { el.innerHTML = opts.map((o) => `<option>${esc(o)}</option>`).join(""); }
+fillSelect($("req-category"), CATEGORY_OPTS);
+fillSelect($("req-severity"), SEVERITY_OPTS);
+$("req-severity").value = "보통";
 
 async function loadRequests() {
   try {
-    const d = await api("/api/requests");
-    META = { categories: d.categories, severities: d.severities, statuses: d.statuses };
-    REQS = d.requests || [];
-    fillSelect($("req-category"), META.categories);
-    fillSelect($("req-severity"), META.severities);
-    $("req-severity").value = "보통";
+    const res = await fetch(
+      `https://api.github.com/repos/${ISSUES_REPO}/issues?labels=${encodeURIComponent(REQ_LABEL)}&state=all&per_page=30&sort=created&direction=desc`,
+      { headers: { "Accept": "application/vnd.github+json" } }
+    );
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const issues = await res.json();
+    REQS = (Array.isArray(issues) ? issues : []).filter((i) => !i.pull_request);
     renderRequests();
   } catch (e) {
-    const hint = hasBotApi()
-      ? `불러오기 실패: ${esc(e.message)}`
-      : "기능 요청은 봇 서버 연결이 필요합니다. 하단 \"API 서버 주소 설정\"에서 봇 주소를 입력하세요.";
-    $("req-list").innerHTML = `<div class="muted">${hint}</div>`;
+    $("req-list").innerHTML = `<div class="muted">불러오기 실패: ${esc(e.message)}</div>`;
   }
+}
+
+function reqStatus(issue) {
+  const names = (issue.labels || []).map((l) => (typeof l === "string" ? l : l.name));
+  if (names.includes("진행중")) return "진행중";
+  if (names.includes("보류")) return "보류";
+  return issue.state === "closed" ? "해결" : "검토대기";
 }
 
 function renderRequests() {
   const list = $("req-list");
   let items = REQS;
-  if (FILTER !== "all") items = items.filter((r) => r.status === FILTER);
+  if (FILTER === "open") items = items.filter((i) => i.state === "open");
+  else if (FILTER === "closed") items = items.filter((i) => i.state === "closed");
+  else if (FILTER === "진행중" || FILTER === "보류") items = items.filter((i) => reqStatus(i) === FILTER);
   if (!items.length) { list.innerHTML = '<div class="muted">요청이 없습니다.</div>'; return; }
   list.innerHTML = items.map(reqCard).join("");
-  if (isOwner()) bindOwnerControls();
 }
 
-function reqCard(r) {
-  const pending = !r.approved;
-  const pendTag = pending ? `<span class="badge pending-tag">검토 대기중</span>` : "";
-  const owner = isOwner() ? ownerControls(r) : "";
-  return `<div class="req ${pending ? "pending" : ""}" data-id="${esc(r.id)}">
+function reqCard(issue) {
+  const status = reqStatus(issue);
+  const labels = (issue.labels || [])
+    .map((l) => (typeof l === "string" ? l : l.name))
+    .filter((n) => n && n !== REQ_LABEL);
+  const created = (issue.created_at || "").slice(0, 10);
+  return `<a class="req" href="${esc(issue.html_url)}" target="_blank" rel="noopener">
     <div class="req-top">
-      <span class="req-title">${esc(r.title)}</span>
+      <span class="req-title">#${issue.number} ${esc(issue.title)}</span>
       <span class="req-badges">
-        ${pendTag}
-        <span class="badge b-cat">${esc(r.category)}</span>
-        <span class="badge b-sev-${esc(r.severity)}">${esc(r.severity)}</span>
-        <span class="badge b-st-${esc(r.status)}">${esc(r.status)}</span>
+        <span class="badge b-st-${esc(status)}">${esc(status)}</span>
+        ${labels.map((l) => `<span class="badge b-cat">${esc(l)}</span>`).join("")}
       </span>
     </div>
-    ${r.detail ? `<div class="req-detail">${esc(r.detail)}</div>` : ""}
-    <div class="req-meta">등록 ${esc(r.created_at)}${r.updated_at && r.updated_at !== r.created_at ? " · 수정 " + esc(r.updated_at) : ""}</div>
-    ${owner}
-  </div>`;
+    <div class="req-meta">등록 ${esc(created)} · 💬 ${issue.comments || 0} · GitHub에서 보기 ↗</div>
+  </a>`;
 }
 
-function ownerControls(r) {
-  const statusOpts = META.statuses.map((s) => `<option ${s === r.status ? "selected" : ""}>${esc(s)}</option>`).join("");
-  return `<div class="req-owner">
-    ${r.approved ? "" : `<button class="approve" data-act="approve">승인</button>`}
-    <select data-act="status">${statusOpts}</select>
-    <button class="del" data-act="delete">삭제</button>
-  </div>`;
-}
-
-function bindOwnerControls() {
-  document.querySelectorAll(".req").forEach((card) => {
-    const id = card.dataset.id;
-    const approve = card.querySelector('[data-act="approve"]');
-    const sel = card.querySelector('[data-act="status"]');
-    const del = card.querySelector('[data-act="delete"]');
-    if (approve) approve.onclick = () => act(`/api/requests/${id}/approve`, {});
-    if (sel) sel.onchange = () => act(`/api/requests/${id}/update`, { status: sel.value });
-    if (del) del.onclick = () => { if (confirm("삭제할까요?")) act(`/api/requests/${id}/delete`, {}); };
-  });
-}
-
-async function act(path, body) {
-  try { await api(path, { method: "POST", body: JSON.stringify(body) }); await loadRequests(); }
-  catch (e) { alert("실패: " + e.message); }
-}
-
-$("btn-submit").addEventListener("click", async () => {
+$("btn-submit").addEventListener("click", () => {
   const title = $("req-title").value.trim();
   const msg = $("submit-msg");
   if (!title) { msg.className = "form-msg err"; msg.textContent = "제목을 입력하세요."; return; }
-  try {
-    await api("/api/requests", { method: "POST", body: JSON.stringify({
-      title, category: $("req-category").value, severity: $("req-severity").value, detail: $("req-detail").value.trim(),
-    }) });
-    msg.className = "form-msg ok"; msg.textContent = "등록되었습니다. 오너 승인 후 정식 반영됩니다.";
-    $("req-title").value = ""; $("req-detail").value = "";
-    await loadRequests();
-  } catch (e) { msg.className = "form-msg err"; msg.textContent = "등록 실패: " + e.message; }
+  const category = $("req-category").value;
+  const severity = $("req-severity").value;
+  const detail = $("req-detail").value.trim();
+  const body = `**분류**: ${category}\n**중요도**: ${severity}\n\n${detail || "(상세 설명 없음)"}`;
+  const url = `https://github.com/${ISSUES_REPO}/issues/new?` +
+    `title=${encodeURIComponent(title)}&labels=${encodeURIComponent(REQ_LABEL)}&body=${encodeURIComponent(body)}`;
+  window.open(url, "_blank", "noopener");
+  msg.className = "form-msg ok";
+  msg.textContent = "GitHub 새 이슈 창이 열렸습니다. 내용을 확인하고 등록해 주세요.";
 });
 
 document.querySelectorAll(".chip").forEach((c) => c.addEventListener("click", () => {
@@ -540,30 +525,26 @@ document.querySelectorAll(".chip").forEach((c) => c.addEventListener("click", ()
   c.classList.add("active"); FILTER = c.dataset.filter; renderRequests();
 }));
 
-/* ── 오너 로그인 ── */
-function reflectOwner() {
-  $("owner-badge").classList.toggle("hidden", !isOwner());
-  $("btn-owner").textContent = isOwner() ? "로그아웃" : "오너 로그인";
-  renderRequests();
-}
-$("btn-owner").addEventListener("click", () => {
-  if (isOwner()) { setToken(""); reflectOwner(); return; }
-  $("login-modal").classList.remove("hidden"); $("login-pw").focus();
-});
-$("login-cancel").addEventListener("click", () => $("login-modal").classList.add("hidden"));
-$("login-ok").addEventListener("click", async () => {
-  const msg = $("login-msg");
+/* ── 공지 배너 (data/notice.json — 봇 .공지 명령이 기록) ── */
+let _dismissedNotice = "";
+async function loadNotice() {
   try {
-    const d = await fetch(apiBase() + "/api/auth/login", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ password: $("login-pw").value }),
-    }).then((r) => r.json().then((j) => ({ ok: r.ok, j })));
-    if (!d.ok) throw new Error(d.j.error || "로그인 실패");
-    setToken(d.j.access_token);
-    $("login-modal").classList.add("hidden"); $("login-pw").value = ""; msg.textContent = "";
-    reflectOwner();
-  } catch (e) { msg.className = "form-msg err"; msg.textContent = e.message; }
-});
+    const res = await fetch("data/notice.json?t=" + Date.now());
+    if (!res.ok) { hideNotice(); return; }
+    const n = await res.json();
+    if (!n || !n.message) { hideNotice(); return; }
+    const sig = n.message + "@" + (n.updated_ts || 0);
+    if (_dismissedNotice === sig) { hideNotice(); return; }
+    const bar = $("notice-banner");
+    bar.className = "notice-banner";
+    bar.innerHTML = `
+      <span class="ic-icon">📢</span>
+      <div class="it-body"><div class="it-title">${esc(n.message)}</div></div>
+      <button class="it-close" title="닫기">✕</button>`;
+    bar.querySelector(".it-close").onclick = () => { _dismissedNotice = sig; hideNotice(); };
+  } catch (_) { hideNotice(); }
+}
+function hideNotice() { $("notice-banner").classList.add("hidden"); }
 
 /* ── API 서버 주소 설정 ── */
 $("btn-server").addEventListener("click", () => {
@@ -577,9 +558,9 @@ $("btn-server").addEventListener("click", () => {
 /* ── 새로고침 / 초기화 ── */
 function refreshAll() {
   $("api-base-label").textContent = "API: " + apiBase();
-  loadStatus(); loadRequests();
+  loadStatus(); loadRequests(); loadNotice();
 }
 $("btn-refresh").addEventListener("click", refreshAll);
-reflectOwner();
 refreshAll();
 setInterval(loadStatus, 15000);
+setInterval(loadNotice, 30000);
